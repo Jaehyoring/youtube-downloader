@@ -9,18 +9,9 @@ echo "==============================="
 echo "  YouTube Downloader"
 echo "==============================="
 
-# ── 현재 터미널 앱 감지 (시작 시 1회) ──
-# $TERM_PROGRAM: "Apple_Terminal" or "iTerm.app"
-TERM_WIN_ID=""
-case "$TERM_PROGRAM" in
-  "Apple_Terminal")
-    TERM_WIN_ID=$(osascript -e 'tell application "Terminal" to return id of front window' 2>/dev/null || echo "")
-    ;;
-  "iTerm.app")
-    # AppleScript에서 iTerm2의 정확한 앱 이름은 "iTerm" (iTerm2 아님)
-    TERM_WIN_ID=$(osascript -e 'tell application "iTerm" to return id of first window' 2>/dev/null || echo "")
-    ;;
-esac
+# ── 시작 시: 현재 Terminal.app 창 ID + iTerm2 창 ID 모두 캡처 ──
+TERMINAL_WIN_ID=$(osascript -e 'tell application "Terminal" to return id of front window' 2>/dev/null || echo "")
+ITERM_WIN_ID=$(osascript -e 'tell application "iTerm" to return id of first window' 2>/dev/null || echo "")
 
 # ── 기존 프로세스 정리 ──
 EXISTING=$(lsof -ti TCP:8000 2>/dev/null || true)
@@ -46,28 +37,11 @@ npm run dev &
 FRONTEND_PID=$!
 echo "      프론트엔드 PID: $FRONTEND_PID"
 
-# ── 종료 시 서버 정리 + 터미널 창 자동 닫기 ──
+# ── Ctrl+C 등으로 강제 종료 시 서버만 정리 ──
 cleanup() {
-  trap - EXIT SIGINT SIGTERM  # 재진입 방지
-  echo ""
-  echo "서버를 종료합니다..."
+  trap - EXIT SIGINT SIGTERM
   kill $BACKEND_PID 2>/dev/null || true
   kill $FRONTEND_PID 2>/dev/null || true
-  sleep 0.3
-
-  # 감지된 터미널 앱만 닫기 (saving no = 확인 다이얼로그 없이)
-  case "$TERM_PROGRAM" in
-    "Apple_Terminal")
-      osascript -e "tell application \"Terminal\" to close (windows whose id is $TERM_WIN_ID) saving no" 2>/dev/null || true
-      ;;
-    "iTerm.app")
-      # AppleScript 앱 이름은 "iTerm" (not "iTerm2")
-      osascript -e "tell application \"iTerm\" to close (windows whose id is $TERM_WIN_ID)" 2>/dev/null || \
-      osascript -e 'tell application "iTerm" to close current window' 2>/dev/null || true
-      ;;
-  esac
-
-  exit 0
 }
 trap cleanup SIGINT SIGTERM EXIT
 
@@ -95,4 +69,22 @@ if [ -f "$CHROME" ]; then
 else
   open "http://localhost:5173"
   wait
+fi
+
+# ── Chrome 종료됨 → 서버 종료 후 터미널 창 닫기 ──
+trap - EXIT SIGINT SIGTERM  # 재진입 방지
+echo ""
+echo "서버를 종료합니다..."
+kill $BACKEND_PID 2>/dev/null || true
+kill $FRONTEND_PID 2>/dev/null || true
+sleep 0.5
+
+# Terminal.app 창 닫기 (saving no = 확인 없이)
+if [ -n "$TERMINAL_WIN_ID" ]; then
+  osascript -e "tell application \"Terminal\" to close (windows whose id is $TERMINAL_WIN_ID) saving no" 2>/dev/null || true
+fi
+
+# iTerm2 창 닫기
+if [ -n "$ITERM_WIN_ID" ]; then
+  osascript -e "tell application \"iTerm\" to close (windows whose id is $ITERM_WIN_ID)" 2>/dev/null || true
 fi
