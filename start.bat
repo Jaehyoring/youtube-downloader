@@ -60,3 +60,4 @@ for /f "tokens=5" %%p in ('netstat -ano 2^>nul ^| findstr ":5173 " ^| findstr "L
 )
 
 endlocal
+exit /b 0
