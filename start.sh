@@ -4,16 +4,48 @@ set -e
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON="python3.12"
 UVICORN="$PYTHON -m uvicorn"
+DEBUGLOG="/tmp/ytdl_debug.log"
 
 echo "==============================="
 echo "  YouTube Downloader"
 echo "==============================="
 
+# ── 디버그 로그 (닫기 문제 진단용) ──
+{
+  echo ""
+  echo "=== ytdl start $(date) ==="
+  echo "TERM_PROGRAM='${TERM_PROGRAM:-}'"
+  echo "ITERM_SESSION_ID='${ITERM_SESSION_ID:-}'"
+  echo "ITERM_PROFILE='${ITERM_PROFILE:-}'"
+} >> "$DEBUGLOG"
+
 # ── 시작 시: 실행 중인 터미널 감지 ──
 MY_TTY=$(tty 2>/dev/null) || MY_TTY=""
 ITERM_WIN_ID=""
-if [ "$TERM_PROGRAM" = "iTerm.app" ]; then
-  # 방법1: TTY로 정확한 창 찾기 (세션 활성 상태에서 동작, 가장 정확)
+
+# iTerm2 감지: TERM_PROGRAM / ITERM_SESSION_ID / ITERM_PROFILE 중 하나라도 있으면 iTerm2
+IN_ITERM=false
+if [ "${TERM_PROGRAM:-}" = "iTerm.app" ] \
+   || [ -n "${ITERM_SESSION_ID:-}" ] \
+   || [ -n "${ITERM_PROFILE:-}" ]; then
+  IN_ITERM=true
+fi
+echo "MY_TTY='$MY_TTY', IN_ITERM=$IN_ITERM" >> "$DEBUGLOG"
+
+if [ "$IN_ITERM" = "true" ]; then
+  # ── 방법0: 현재 세션 "종료 시 자동 닫기" 설정 (가장 우아한 해결책) ──
+  # iTerm2 Profile > "When a session ends" 설정을 세션별로 런타임에 override
+  cse_result=$(osascript -e '
+    tell application "iTerm"
+      tell current session of current window
+        set close session on end to true
+      end tell
+      return "ok"
+    end tell
+  ' 2>&1) || cse_result="error"
+  echo "close session on end: $cse_result" >> "$DEBUGLOG"
+
+  # ── 방법1: TTY로 창 ID 찾기 (세션 활성 상태에서 가장 정확) ──
   if [ -n "$MY_TTY" ]; then
     ITERM_WIN_ID=$(osascript -e "
       tell application \"iTerm\"
@@ -29,11 +61,13 @@ if [ "$TERM_PROGRAM" = "iTerm.app" ]; then
       end tell
     " 2>/dev/null) || ITERM_WIN_ID=""
   fi
-  # 방법2: TTY 방식 실패 시 현재 frontmost 창 ID로 대체
+
+  # ── 방법2: TTY 방식 실패 시 frontmost 창 ID ──
   if [ -z "$ITERM_WIN_ID" ]; then
     ITERM_WIN_ID=$(osascript -e 'tell application "iTerm" to return id of first window' 2>/dev/null) || ITERM_WIN_ID=""
   fi
 fi
+echo "ITERM_WIN_ID='$ITERM_WIN_ID'" >> "$DEBUGLOG"
 
 # ── 기존 프로세스 정리 ──
 EXISTING=$(lsof -ti TCP:8000 2>/dev/null || true)
@@ -107,22 +141,52 @@ sleep 1
 
 # ── 터미널 창 닫기 ──
 # Terminal.app: exit 0 → shellExitAction=2 → 자동 닫힘 (AppleScript 불필요)
-# iTerm2: 셸 종료 후 창 ID로 닫기 (TTY는 셸 종료 시 해제되므로 창 ID 사용)
-if [ "$TERM_PROGRAM" = "iTerm.app" ] && [ -n "$ITERM_WIN_ID" ]; then
-  # nohup: PTY 종료 시 SIGHUP을 무시 → 셸 exit 후에도 프로세스 생존 보장
-  # (disown만으로는 PTY 종료 시 SIGHUP으로 죽음 - 실증 확인)
-  nohup osascript -e "
-    delay 0.8
-    tell application \"iTerm\"
-      repeat with w in windows
-        if (id of w) = $ITERM_WIN_ID then
-          close w
-          return
-        end if
-      end repeat
-    end tell
-  " &>/dev/null &
+# iTerm2: ① close session on end (설정됨, exit 0으로 자동 닫힘)
+#         ② nohup 백업 (창 ID로 강제 닫기)
+echo "=== close $(date) ===" >> "$DEBUGLOG"
+echo "IN_ITERM=$IN_ITERM, ITERM_WIN_ID='$ITERM_WIN_ID'" >> "$DEBUGLOG"
+
+if [ "$IN_ITERM" = "true" ] && [ -n "$ITERM_WIN_ID" ]; then
+  # 창 ID를 파일로 전달 (quoting 문제 완전 회피)
+  echo "$ITERM_WIN_ID" > /tmp/ytdl_winid.txt
+
+  # close script를 파일로 생성 (single-quoted heredoc = 내부 변수 미치환)
+  # 내부의 $WIN_ID는 close script 실행 시 치환됨
+  cat > /tmp/ytdl_close.sh << 'CLOSESCRIPT'
+#!/bin/bash
+sleep 0.8
+WIN_ID=$(cat /tmp/ytdl_winid.txt 2>/dev/null)
+LOGFILE=/tmp/ytdl_debug.log
+echo "=== ytdl_close $(date) WIN_ID='$WIN_ID' ===" >> "$LOGFILE"
+if [ -n "$WIN_ID" ]; then
+  result=$(osascript 2>&1 << OSASCRIPT
+tell application "iTerm"
+  set winCount to count of windows
+  repeat with w in windows
+    if (id of w) = $WIN_ID then
+      close w
+      return "closed"
+    end if
+  end repeat
+  return "not found (total windows: " & (winCount as string) & ")"
+end tell
+OSASCRIPT
+)
+  echo "osascript: $result" >> "$LOGFILE"
+else
+  echo "WIN_ID empty!" >> "$LOGFILE"
+fi
+rm -f /tmp/ytdl_winid.txt /tmp/ytdl_close.sh
+CLOSESCRIPT
+
+  chmod +x /tmp/ytdl_close.sh
+  echo "Launching nohup /tmp/ytdl_close.sh" >> "$DEBUGLOG"
+  nohup bash /tmp/ytdl_close.sh >> "$DEBUGLOG" 2>&1 &
   disown
+  echo "nohup launched (pid=$!)" >> "$DEBUGLOG"
+
+elif [ "$IN_ITERM" = "true" ]; then
+  echo "IN_ITERM=true but ITERM_WIN_ID empty → relying on 'close session on end'" >> "$DEBUGLOG"
 fi
 
 exit 0
