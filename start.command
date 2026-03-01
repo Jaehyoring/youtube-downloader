@@ -11,18 +11,6 @@ echo "==============================="
 
 # ── 시작 시: 실행 중인 터미널만 감지 (다른 앱은 건드리지 않음) ──
 MY_TTY=$(tty 2>/dev/null || echo "")
-TERM_WIN_ID=""
-
-case "$TERM_PROGRAM" in
-  "Apple_Terminal")
-    # Terminal.app이 이 스크립트를 실행 중 → 창 ID 캡처
-    TERM_WIN_ID=$(osascript -e 'tell application "Terminal" to return id of front window' 2>/dev/null || echo "")
-    ;;
-  "iTerm.app")
-    # iTerm2가 이 스크립트를 실행 중 → TTY로 식별 (ID 불필요)
-    ;;
-  # 그 외 터미널은 자동 닫기 미지원
-esac
 
 # ── 기존 프로세스 정리 ──
 EXISTING=$(lsof -ti TCP:8000 2>/dev/null || true)
@@ -82,49 +70,38 @@ else
   wait
 fi
 
-# ── Chrome 종료됨 → 서버 종료 후 터미널 창 닫기 ──
+# ── Chrome 종료됨 → 모든 프로세스 종료 ──
 trap - EXIT SIGINT SIGTERM  # 재진입 방지
 echo ""
 echo "서버를 종료합니다..."
+
 kill $BACKEND_PID 2>/dev/null || true
 kill $FRONTEND_PID 2>/dev/null || true
-sleep 0.5
+# Chrome 관련 잔여 프로세스(Helper 등) 정리
+pkill -f "ytdl-chrome" 2>/dev/null || true
+# 모든 프로세스가 완전히 종료될 때까지 대기
+sleep 1
 
-# 실행 중인 터미널에 맞게 창 닫기
-case "$TERM_PROGRAM" in
-  "Apple_Terminal")
-    # Terminal.app: 창 ID로 닫기 (iterate → 확실한 매칭)
-    if [ -n "$TERM_WIN_ID" ]; then
-      osascript -e "
-        tell application \"Terminal\"
-          repeat with w in windows
-            if id of w = $TERM_WIN_ID then
-              close w saving no
-              exit repeat
+# ── 터미널 창 닫기 ──
+# Terminal.app: 셸(exit 0)이 종료되면 창이 자동으로 닫힘 → AppleScript 불필요
+# iTerm2: 셸 종료 후 백그라운드 osascript로 창 닫기 (확인 다이얼로그 방지)
+if [ "$TERM_PROGRAM" = "iTerm.app" ] && [ -n "$MY_TTY" ]; then
+  osascript -e "
+    delay 0.8
+    tell application \"iTerm\"
+      repeat with w in windows
+        repeat with t in tabs of w
+          repeat with s in sessions of t
+            if tty of s = \"$MY_TTY\" then
+              close w
+              return
             end if
           end repeat
-        end tell
-      " 2>/dev/null || true
-    fi
-    ;;
-  "iTerm.app")
-    # iTerm2: TTY로 해당 세션이 있는 창만 닫기
-    if [ -n "$MY_TTY" ]; then
-      osascript -e "
-        tell application \"iTerm\"
-          set myTTY to \"$MY_TTY\"
-          repeat with w in windows
-            repeat with t in tabs of w
-              repeat with s in sessions of t
-                if tty of s = myTTY then
-                  close w
-                  return
-                end if
-              end repeat
-            end repeat
-          end repeat
-        end tell
-      " 2>/dev/null || true
-    fi
-    ;;
-esac
+        end repeat
+      end repeat
+    end tell
+  " &>/dev/null &
+  disown
+fi
+
+exit 0
