@@ -9,9 +9,20 @@ echo "==============================="
 echo "  YouTube Downloader"
 echo "==============================="
 
-# ── 시작 시: 현재 Terminal.app 창 ID + iTerm2 창 ID 모두 캡처 ──
-TERMINAL_WIN_ID=$(osascript -e 'tell application "Terminal" to return id of front window' 2>/dev/null || echo "")
-ITERM_WIN_ID=$(osascript -e 'tell application "iTerm" to return id of first window' 2>/dev/null || echo "")
+# ── 시작 시: 실행 중인 터미널만 감지 (다른 앱은 건드리지 않음) ──
+MY_TTY=$(tty 2>/dev/null || echo "")
+TERM_WIN_ID=""
+
+case "$TERM_PROGRAM" in
+  "Apple_Terminal")
+    # Terminal.app이 이 스크립트를 실행 중 → 창 ID 캡처
+    TERM_WIN_ID=$(osascript -e 'tell application "Terminal" to return id of front window' 2>/dev/null || echo "")
+    ;;
+  "iTerm.app")
+    # iTerm2가 이 스크립트를 실행 중 → TTY로 식별 (ID 불필요)
+    ;;
+  # 그 외 터미널은 자동 닫기 미지원
+esac
 
 # ── 기존 프로세스 정리 ──
 EXISTING=$(lsof -ti TCP:8000 2>/dev/null || true)
@@ -79,12 +90,41 @@ kill $BACKEND_PID 2>/dev/null || true
 kill $FRONTEND_PID 2>/dev/null || true
 sleep 0.5
 
-# Terminal.app 창 닫기 (saving no = 확인 없이)
-if [ -n "$TERMINAL_WIN_ID" ]; then
-  osascript -e "tell application \"Terminal\" to close (windows whose id is $TERMINAL_WIN_ID) saving no" 2>/dev/null || true
-fi
-
-# iTerm2 창 닫기
-if [ -n "$ITERM_WIN_ID" ]; then
-  osascript -e "tell application \"iTerm\" to close (windows whose id is $ITERM_WIN_ID)" 2>/dev/null || true
-fi
+# 실행 중인 터미널에 맞게 창 닫기
+case "$TERM_PROGRAM" in
+  "Apple_Terminal")
+    # Terminal.app: 창 ID로 닫기 (iterate → 확실한 매칭)
+    if [ -n "$TERM_WIN_ID" ]; then
+      osascript -e "
+        tell application \"Terminal\"
+          repeat with w in windows
+            if id of w = $TERM_WIN_ID then
+              close w saving no
+              exit repeat
+            end if
+          end repeat
+        end tell
+      " 2>/dev/null || true
+    fi
+    ;;
+  "iTerm.app")
+    # iTerm2: TTY로 해당 세션이 있는 창만 닫기
+    if [ -n "$MY_TTY" ]; then
+      osascript -e "
+        tell application \"iTerm\"
+          set myTTY to \"$MY_TTY\"
+          repeat with w in windows
+            repeat with t in tabs of w
+              repeat with s in sessions of t
+                if tty of s = myTTY then
+                  close w
+                  return
+                end if
+              end repeat
+            end repeat
+          end repeat
+        end tell
+      " 2>/dev/null || true
+    fi
+    ;;
+esac
