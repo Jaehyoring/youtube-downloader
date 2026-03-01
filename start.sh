@@ -10,10 +10,29 @@ echo "  YouTube Downloader"
 echo "==============================="
 
 # ── 시작 시: 실행 중인 터미널 감지 ──
-# iTerm2: 창 ID를 미리 캡처 (TTY는 셸 종료 후 해제되므로 ID가 더 안정적)
+MY_TTY=$(tty 2>/dev/null) || MY_TTY=""
 ITERM_WIN_ID=""
 if [ "$TERM_PROGRAM" = "iTerm.app" ]; then
-  ITERM_WIN_ID=$(osascript -e 'tell application "iTerm" to return id of first window' 2>/dev/null) || ITERM_WIN_ID=""
+  # 방법1: TTY로 정확한 창 찾기 (세션 활성 상태에서 동작, 가장 정확)
+  if [ -n "$MY_TTY" ]; then
+    ITERM_WIN_ID=$(osascript -e "
+      tell application \"iTerm\"
+        repeat with w in windows
+          repeat with t in tabs of w
+            repeat with s in sessions of t
+              if tty of s = \"$MY_TTY\" then
+                return id of w
+              end if
+            end repeat
+          end repeat
+        end repeat
+      end tell
+    " 2>/dev/null) || ITERM_WIN_ID=""
+  fi
+  # 방법2: TTY 방식 실패 시 현재 frontmost 창 ID로 대체
+  if [ -z "$ITERM_WIN_ID" ]; then
+    ITERM_WIN_ID=$(osascript -e 'tell application "iTerm" to return id of first window' 2>/dev/null) || ITERM_WIN_ID=""
+  fi
 fi
 
 # ── 기존 프로세스 정리 ──
@@ -90,7 +109,9 @@ sleep 1
 # Terminal.app: exit 0 → shellExitAction=2 → 자동 닫힘 (AppleScript 불필요)
 # iTerm2: 셸 종료 후 창 ID로 닫기 (TTY는 셸 종료 시 해제되므로 창 ID 사용)
 if [ "$TERM_PROGRAM" = "iTerm.app" ] && [ -n "$ITERM_WIN_ID" ]; then
-  osascript -e "
+  # nohup: PTY 종료 시 SIGHUP을 무시 → 셸 exit 후에도 프로세스 생존 보장
+  # (disown만으로는 PTY 종료 시 SIGHUP으로 죽음 - 실증 확인)
+  nohup osascript -e "
     delay 0.8
     tell application \"iTerm\"
       repeat with w in windows
