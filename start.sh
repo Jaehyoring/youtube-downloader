@@ -10,7 +10,7 @@ echo "  YouTube Downloader"
 echo "==============================="
 
 # ── 시작 시: 실행 중인 터미널만 감지 (다른 앱은 건드리지 않음) ──
-MY_TTY=$(tty 2>/dev/null || echo "")
+MY_TTY=$(tty 2>/dev/null) || MY_TTY=""
 
 # ── 기존 프로세스 정리 ──
 EXISTING=$(lsof -ti TCP:8000 2>/dev/null || true)
