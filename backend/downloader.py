@@ -2,6 +2,8 @@ import yt_dlp
 import asyncio
 import json
 import os
+import shutil
+import sys
 import time
 from pathlib import Path
 from typing import AsyncGenerator, Optional
@@ -30,6 +32,77 @@ def save_history(entry: dict):
         json.dump(history, f, ensure_ascii=False, indent=2)
 
 
+# ── OS별 실행 파일 경로 자동 탐지 ─────────────────────────────────────────────
+
+def _find_node() -> str:
+    """Node.js 실행 파일 경로 자동 탐지 (macOS / Windows 공통)"""
+    # 1순위: PATH에서 찾기
+    node = shutil.which("node")
+    if node:
+        return node
+
+    # 2순위: OS별 일반 경로
+    if sys.platform == "darwin":
+        candidates = [
+            "/opt/homebrew/bin/node",   # Apple Silicon Mac
+            "/usr/local/bin/node",      # Intel Mac (Homebrew)
+        ]
+    elif sys.platform == "win32":
+        candidates = [
+            r"C:\Program Files\nodejs\node.exe",
+            r"C:\Program Files (x86)\nodejs\node.exe",
+            os.path.expandvars(r"%APPDATA%\npm\node.exe"),
+            os.path.expandvars(r"%ProgramFiles%\nodejs\node.exe"),
+        ]
+    else:
+        candidates = ["/usr/bin/node", "/usr/local/bin/node"]
+
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+
+    return "node"  # fallback — PATH에 있을 것으로 기대
+
+
+def _find_ffmpeg_dir() -> str:
+    """ffmpeg 디렉토리 자동 탐지 (macOS / Windows 공통)"""
+    # 1순위: PATH에서 찾기
+    ffmpeg_bin = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
+    ffmpeg = shutil.which(ffmpeg_bin)
+    if ffmpeg:
+        return str(Path(ffmpeg).parent)
+
+    # 2순위: OS별 일반 경로
+    if sys.platform == "darwin":
+        candidates = [
+            "/opt/homebrew/bin",   # Apple Silicon Mac
+            "/usr/local/bin",      # Intel Mac
+        ]
+    elif sys.platform == "win32":
+        candidates = [
+            r"C:\ffmpeg\bin",
+            r"C:\ProgramData\chocolatey\bin",
+            os.path.expandvars(r"%ProgramFiles%\ffmpeg\bin"),
+        ]
+    else:
+        candidates = ["/usr/bin", "/usr/local/bin"]
+
+    for path in candidates:
+        if os.path.isfile(os.path.join(path, ffmpeg_bin)):
+            return path
+
+    return ""  # yt-dlp가 PATH에서 직접 탐색
+
+
+NODE_PATH = _find_node()
+FFMPEG_DIR = _find_ffmpeg_dir()
+
+print(f"[config] Node.js: {NODE_PATH}")
+print(f"[config] ffmpeg: {FFMPEG_DIR or '(PATH에서 탐색)'}")
+
+
+# ── 브라우저 쿠키 탐지 ─────────────────────────────────────────────────────────
+
 _COOKIES_OPTS = None  # type: Optional[dict]
 
 def _get_browser_cookies_opts() -> dict:
@@ -39,7 +112,11 @@ def _get_browser_cookies_opts() -> dict:
         return _COOKIES_OPTS
 
     import tempfile
-    for browser in ("chrome", "firefox"):
+
+    # Windows는 Edge도 지원 (기본 브라우저)
+    browsers = ("chrome", "edge", "firefox") if sys.platform == "win32" else ("chrome", "firefox")
+
+    for browser in browsers:
         try:
             tmp = tempfile.mktemp(suffix=".txt")
             test_opts = {
@@ -53,7 +130,6 @@ def _get_browser_cookies_opts() -> dict:
             if os.path.exists(tmp):
                 content = open(tmp).read()
                 os.unlink(tmp)
-                # 로그인 세션 쿠키 확인
                 if any(c in content for c in ("SID\t", "LOGIN_INFO\t", "__Secure-3PSID\t")):
                     print(f"[cookies] YouTube 로그인 세션 발견: {browser}")
                     _COOKIES_OPTS = {"cookiesfrombrowser": (browser, None, None, None)}
@@ -61,19 +137,31 @@ def _get_browser_cookies_opts() -> dict:
         except Exception:
             pass
 
-    # 로그인 세션 없음 - 익명 Chrome 쿠키 사용
     print("[cookies] YouTube 로그인 세션 없음. Chrome 익명 쿠키 사용")
     _COOKIES_OPTS = {"cookiesfrombrowser": ("chrome", None, None, None)}
     return _COOKIES_OPTS
 
 
+# ── 공통 yt-dlp 기본 옵션 ─────────────────────────────────────────────────────
+
+def _base_ydl_opts() -> dict:
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "js_runtimes": {"node": {"path": NODE_PATH}},
+    }
+    if FFMPEG_DIR:
+        opts["ffmpeg_location"] = FFMPEG_DIR
+    return opts
+
+
+# ── 영상 정보 조회 ─────────────────────────────────────────────────────────────
+
 def get_video_info(url: str) -> dict:
     cookies_opts = _get_browser_cookies_opts()
     ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
+        **_base_ydl_opts(),
         "extract_flat": False,
-        "js_runtimes": {"node": {"path": "/usr/local/bin/node"}},
         **cookies_opts,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -102,6 +190,8 @@ def get_video_info(url: str) -> dict:
         }
 
 
+# ── 다운로드 ───────────────────────────────────────────────────────────────────
+
 async def download_video(
     url: str,
     format_type: str,
@@ -126,8 +216,7 @@ async def download_video(
             }
             loop.call_soon_threadsafe(progress_queue.put_nowait, payload)
         elif d["status"] == "finished":
-            payload = {"status": "processing"}
-            loop.call_soon_threadsafe(progress_queue.put_nowait, payload)
+            loop.call_soon_threadsafe(progress_queue.put_nowait, {"status": "processing"})
 
     # 포맷 옵션 결정
     if format_type == "mp3":
@@ -154,20 +243,15 @@ async def download_video(
         postprocessors = []
         outtmpl = str(DOWNLOADS_DIR / "%(title)s.%(ext)s")
 
-    # 브라우저 쿠키 선택 (YouTube 로그인 세션 필요)
     cookies_opts = _get_browser_cookies_opts()
 
     ydl_opts = {
+        **_base_ydl_opts(),
         "format": format_selector,
         "outtmpl": outtmpl,
         "progress_hooks": [progress_hook],
         "postprocessors": postprocessors,
-        "quiet": True,
-        "no_warnings": True,
-        "ffmpeg_location": "/opt/homebrew/bin",
         "merge_output_format": format_type if format_type != "mp3" else None,
-        # Node.js로 YouTube JS 챌린지(nsig/sig) 해결 - yt-dlp 2026.02.21 필요
-        "js_runtimes": {"node": {"path": "/usr/local/bin/node"}},
         **cookies_opts,
     }
 
@@ -178,7 +262,6 @@ async def download_video(
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 filename = ydl.prepare_filename(info)
-                # mp3의 경우 확장자 변경
                 if format_type == "mp3":
                     filename = os.path.splitext(filename)[0] + ".mp3"
                 result["filepath"] = filename
@@ -188,13 +271,11 @@ async def download_video(
         finally:
             loop.call_soon_threadsafe(progress_queue.put_nowait, {"status": "done"})
 
-    # 별도 스레드에서 다운로드 실행
     download_task = loop.run_in_executor(None, run_download)
 
     while True:
         payload = await progress_queue.get()
         yield f"data: {json.dumps(payload)}\n\n"
-
         if payload["status"] == "done":
             break
 
