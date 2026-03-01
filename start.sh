@@ -84,9 +84,10 @@ npm run dev &
 FRONTEND_PID=$!
 echo "      프론트엔드 PID: $FRONTEND_PID"
 
-# ── Ctrl+C 등으로 강제 종료 시 서버만 정리 ──
+# ── Ctrl+C 등으로 강제 종료 시 서버 + Chrome 모두 정리 ──
 cleanup() {
   trap - EXIT SIGINT SIGTERM
+  pkill -f "ytdl-chrome" 2>/dev/null || true
   kill $BACKEND_PID 2>/dev/null || true
   kill $FRONTEND_PID 2>/dev/null || true
 }
@@ -104,7 +105,10 @@ done
 
 echo "✓ 앱이 실행되었습니다! (브라우저 창을 닫으면 자동 종료)"
 
-# ── Chrome 앱 모드로 실행 (창 닫힐 때까지 대기) ──
+# ── Chrome 앱 모드로 실행 ──
+# 문제: Chrome은 창 닫힘과 무관하게 프로세스가 살아있을 수 있음
+# 해결: Chrome을 백그라운드로 실행하고, ytdl-chrome 프로세스가
+#       모두 사라질 때까지 pgrep으로 폴링 → 창 닫힘을 정확히 감지
 CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 echo "=== [PRE-CHROME] $(date) ===" >> "$DEBUGLOG"
 if [ -f "$CHROME" ]; then
@@ -113,17 +117,26 @@ if [ -f "$CHROME" ]; then
     --user-data-dir="$DIR/.ytdl-chrome" \
     --no-first-run \
     --disable-extensions \
-    --window-size=1280,800 2>/dev/null
-  CHROME_EXIT=$?
-  echo "=== [POST-CHROME exit=$CHROME_EXIT] $(date) ===" >> "$DEBUGLOG"
+    --window-size=1280,800 2>/dev/null &
+
+  # Chrome이 시작될 시간 확보
+  sleep 2
+
+  # ytdl-chrome 프로파일을 사용하는 Chrome 프로세스가 모두 종료될 때까지 대기
+  # (Chrome Helper, GPU 프로세스 등 모든 관련 프로세스 포함)
+  while pgrep -f "ytdl-chrome" > /dev/null 2>&1; do
+    sleep 1
+  done
 else
   open "http://localhost:5173"
   wait
 fi
 
-# ── Chrome 종료됨 → 정리 시작 ──
+echo "=== [POST-CHROME] $(date) ===" >> "$DEBUGLOG"
+
+# ── Chrome 창 닫힘 감지됨 → 정리 시작 ──
 set +e
-echo "=== [1] Chrome 종료 $(date) ===" >> "$DEBUGLOG"
+echo "=== [1] 정리 시작 $(date) ===" >> "$DEBUGLOG"
 
 trap - EXIT SIGINT SIGTERM
 echo "=== [2] trap 해제 ===" >> "$DEBUGLOG"
@@ -134,13 +147,11 @@ kill $BACKEND_PID 2>/dev/null
 echo "=== [3] backend kill ===" >> "$DEBUGLOG"
 kill $FRONTEND_PID 2>/dev/null
 echo "=== [4] frontend kill ===" >> "$DEBUGLOG"
-pkill -f "ytdl-chrome" 2>/dev/null
-echo "=== [5] pkill done ===" >> "$DEBUGLOG"
 sleep 1
-echo "=== [6] sleep done ===" >> "$DEBUGLOG"
+echo "=== [5] sleep done ===" >> "$DEBUGLOG"
 
 # ── 터미널 창 닫기 ──
-echo "=== [7] close section WIN_APP='$WIN_APP', WIN_ID='$WIN_ID' ===" >> "$DEBUGLOG"
+echo "=== [6] close section WIN_APP='$WIN_APP', WIN_ID='$WIN_ID' ===" >> "$DEBUGLOG"
 
 if [ -n "$WIN_APP" ] && [ -n "$WIN_ID" ]; then
   echo "$WIN_ID"  > /tmp/ytdl_winid.txt
@@ -174,13 +185,13 @@ rm -f /tmp/ytdl_winid.txt /tmp/ytdl_winapp.txt /tmp/ytdl_close.sh
 CLOSESCRIPT
 
   chmod +x /tmp/ytdl_close.sh
-  echo "=== [8] launching nohup ===" >> "$DEBUGLOG"
+  echo "=== [7] launching nohup ===" >> "$DEBUGLOG"
   nohup bash /tmp/ytdl_close.sh >> "$DEBUGLOG" 2>&1 &
   disown
-  echo "=== [9] nohup pid=$! ===" >> "$DEBUGLOG"
+  echo "=== [8] nohup pid=$! ===" >> "$DEBUGLOG"
 else
-  echo "=== [7b] WIN_APP or WIN_ID empty, skip ===" >> "$DEBUGLOG"
+  echo "=== [6b] WIN_APP or WIN_ID empty, skip ===" >> "$DEBUGLOG"
 fi
 
-echo "=== [10] exit 0 ===" >> "$DEBUGLOG"
+echo "=== [9] exit 0 ===" >> "$DEBUGLOG"
 exit 0
