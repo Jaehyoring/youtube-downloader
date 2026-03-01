@@ -36,12 +36,16 @@ echo "      프론트엔드 PID: $FRONTEND_PID"
 
 # 종료 시 양쪽 프로세스 정리 + 터미널 창 자동 닫기
 cleanup() {
+  trap - EXIT SIGINT SIGTERM  # 재진입 방지 (EXIT trap이 exit 0에 의해 재호출되는 것 차단)
   echo ""
   echo "서버를 종료합니다..."
   kill $BACKEND_PID 2>/dev/null || true
   kill $FRONTEND_PID 2>/dev/null || true
-  # 터미널 창 자동 닫기 (0.3초 후)
-  (sleep 0.3 && osascript -e 'tell application "Terminal" to close front window' 2>/dev/null) &
+  # 터미널 창 자동 닫기 (Terminal.app / iTerm2 모두 지원)
+  (sleep 0.5 && {
+    osascript -e 'tell application "Terminal" to close front window' 2>/dev/null || \
+    osascript -e 'tell application "iTerm2" to close current window' 2>/dev/null || true
+  }) &
   exit 0
 }
 trap cleanup SIGINT SIGTERM EXIT
