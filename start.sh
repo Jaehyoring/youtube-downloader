@@ -9,8 +9,12 @@ echo "==============================="
 echo "  YouTube Downloader"
 echo "==============================="
 
-# ── 시작 시: 실행 중인 터미널만 감지 (다른 앱은 건드리지 않음) ──
-MY_TTY=$(tty 2>/dev/null) || MY_TTY=""
+# ── 시작 시: 실행 중인 터미널 감지 ──
+# iTerm2: 창 ID를 미리 캡처 (TTY는 셸 종료 후 해제되므로 ID가 더 안정적)
+ITERM_WIN_ID=""
+if [ "$TERM_PROGRAM" = "iTerm.app" ]; then
+  ITERM_WIN_ID=$(osascript -e 'tell application "iTerm" to return id of first window' 2>/dev/null) || ITERM_WIN_ID=""
+fi
 
 # ── 기존 프로세스 정리 ──
 EXISTING=$(lsof -ti TCP:8000 2>/dev/null || true)
@@ -83,21 +87,17 @@ pkill -f "ytdl-chrome" 2>/dev/null || true
 sleep 1
 
 # ── 터미널 창 닫기 ──
-# Terminal.app: 셸(exit 0)이 종료되면 창이 자동으로 닫힘 → AppleScript 불필요
-# iTerm2: 셸 종료 후 백그라운드 osascript로 창 닫기 (확인 다이얼로그 방지)
-if [ "$TERM_PROGRAM" = "iTerm.app" ] && [ -n "$MY_TTY" ]; then
+# Terminal.app: exit 0 → shellExitAction=2 → 자동 닫힘 (AppleScript 불필요)
+# iTerm2: 셸 종료 후 창 ID로 닫기 (TTY는 셸 종료 시 해제되므로 창 ID 사용)
+if [ "$TERM_PROGRAM" = "iTerm.app" ] && [ -n "$ITERM_WIN_ID" ]; then
   osascript -e "
     delay 0.8
     tell application \"iTerm\"
       repeat with w in windows
-        repeat with t in tabs of w
-          repeat with s in sessions of t
-            if tty of s = \"$MY_TTY\" then
-              close w
-              return
-            end if
-          end repeat
-        end repeat
+        if (id of w) = $ITERM_WIN_ID then
+          close w
+          return
+        end if
       end repeat
     end tell
   " &>/dev/null &
