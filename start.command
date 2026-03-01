@@ -16,6 +16,10 @@ case "$TERM_PROGRAM" in
   "Apple_Terminal")
     TERM_WIN_ID=$(osascript -e 'tell application "Terminal" to return id of front window' 2>/dev/null || echo "")
     ;;
+  "iTerm.app")
+    # AppleScript에서 iTerm2의 정확한 앱 이름은 "iTerm" (iTerm2 아님)
+    TERM_WIN_ID=$(osascript -e 'tell application "iTerm" to return id of first window' 2>/dev/null || echo "")
+    ;;
 esac
 
 # ── 기존 프로세스 정리 ──
@@ -57,7 +61,9 @@ cleanup() {
       osascript -e "tell application \"Terminal\" to close (windows whose id is $TERM_WIN_ID) saving no" 2>/dev/null || true
       ;;
     "iTerm.app")
-      osascript -e 'tell application "iTerm2" to close current window' 2>/dev/null || true
+      # AppleScript 앱 이름은 "iTerm" (not "iTerm2")
+      osascript -e "tell application \"iTerm\" to close (windows whose id is $TERM_WIN_ID)" 2>/dev/null || \
+      osascript -e 'tell application "iTerm" to close current window' 2>/dev/null || true
       ;;
   esac
 
