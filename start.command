@@ -117,6 +117,7 @@ if [ -f "$CHROME" ]; then
     --user-data-dir="$DIR/.ytdl-chrome" \
     --no-first-run \
     --disable-extensions \
+    --disable-background-mode \
     --window-size=1280,800 2>/dev/null &
 
   # Chrome이 시작될 시간 확보
