@@ -9,6 +9,15 @@ echo "==============================="
 echo "  YouTube Downloader"
 echo "==============================="
 
+# ── 현재 터미널 앱 감지 (시작 시 1회) ──
+# $TERM_PROGRAM: "Apple_Terminal" or "iTerm.app"
+TERM_WIN_ID=""
+case "$TERM_PROGRAM" in
+  "Apple_Terminal")
+    TERM_WIN_ID=$(osascript -e 'tell application "Terminal" to return id of front window' 2>/dev/null || echo "")
+    ;;
+esac
+
 # ── 기존 프로세스 정리 ──
 EXISTING=$(lsof -ti TCP:8000 2>/dev/null || true)
 if [ -n "$EXISTING" ]; then
@@ -24,7 +33,6 @@ $UVICORN main:app --host 127.0.0.1 --port 8000 --reload &
 BACKEND_PID=$!
 echo "      백엔드 PID: $BACKEND_PID"
 
-# 백엔드가 준비될 때까지 대기
 sleep 2
 
 # ── 프론트엔드 실행 ──
@@ -34,18 +42,25 @@ npm run dev &
 FRONTEND_PID=$!
 echo "      프론트엔드 PID: $FRONTEND_PID"
 
-# 종료 시 양쪽 프로세스 정리 + 터미널 창 자동 닫기
+# ── 종료 시 서버 정리 + 터미널 창 자동 닫기 ──
 cleanup() {
-  trap - EXIT SIGINT SIGTERM  # 재진입 방지 (EXIT trap이 exit 0에 의해 재호출되는 것 차단)
+  trap - EXIT SIGINT SIGTERM  # 재진입 방지
   echo ""
   echo "서버를 종료합니다..."
   kill $BACKEND_PID 2>/dev/null || true
   kill $FRONTEND_PID 2>/dev/null || true
-  # 터미널 창 자동 닫기 (Terminal.app / iTerm2 모두 지원)
-  (sleep 0.5 && {
-    osascript -e 'tell application "Terminal" to close front window' 2>/dev/null || \
-    osascript -e 'tell application "iTerm2" to close current window' 2>/dev/null || true
-  }) &
+  sleep 0.3
+
+  # 감지된 터미널 앱만 닫기 (saving no = 확인 다이얼로그 없이)
+  case "$TERM_PROGRAM" in
+    "Apple_Terminal")
+      osascript -e "tell application \"Terminal\" to close (windows whose id is $TERM_WIN_ID) saving no" 2>/dev/null || true
+      ;;
+    "iTerm.app")
+      osascript -e 'tell application "iTerm2" to close current window' 2>/dev/null || true
+      ;;
+  esac
+
   exit 0
 }
 trap cleanup SIGINT SIGTERM EXIT
