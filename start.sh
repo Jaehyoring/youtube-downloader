@@ -10,44 +10,38 @@ echo "==============================="
 echo "  YouTube Downloader"
 echo "==============================="
 
-# ── 디버그 로그 (닫기 문제 진단용) ──
+# ── 디버그 로그 ──
 {
   echo ""
   echo "=== ytdl start $(date) ==="
   echo "TERM_PROGRAM='${TERM_PROGRAM:-}'"
   echo "ITERM_SESSION_ID='${ITERM_SESSION_ID:-}'"
-  echo "ITERM_PROFILE='${ITERM_PROFILE:-}'"
 } >> "$DEBUGLOG"
 
-# ── 시작 시: 실행 중인 터미널 감지 ──
+# ── 시작 시: 터미널 종류 감지 & 창 ID 캡처 ──
 MY_TTY=$(tty 2>/dev/null) || MY_TTY=""
-ITERM_WIN_ID=""
+WIN_APP=""   # "Terminal" 또는 "iTerm"
+WIN_ID=""    # 창 ID
 
-# iTerm2 감지: TERM_PROGRAM / ITERM_SESSION_ID / ITERM_PROFILE 중 하나라도 있으면 iTerm2
-IN_ITERM=false
-if [ "${TERM_PROGRAM:-}" = "iTerm.app" ] \
-   || [ -n "${ITERM_SESSION_ID:-}" ] \
-   || [ -n "${ITERM_PROFILE:-}" ]; then
-  IN_ITERM=true
-fi
-echo "MY_TTY='$MY_TTY', IN_ITERM=$IN_ITERM" >> "$DEBUGLOG"
+if [ "${TERM_PROGRAM:-}" = "Apple_Terminal" ]; then
+  WIN_APP="Terminal"
+  WIN_ID=$(osascript -e 'tell application "Terminal" to return id of front window' 2>/dev/null) || WIN_ID=""
 
-if [ "$IN_ITERM" = "true" ]; then
-  # ── 방법0: 현재 세션 "종료 시 자동 닫기" 설정 (가장 우아한 해결책) ──
-  # iTerm2 Profile > "When a session ends" 설정을 세션별로 런타임에 override
-  cse_result=$(osascript -e '
+elif [ "${TERM_PROGRAM:-}" = "iTerm.app" ] \
+     || [ -n "${ITERM_SESSION_ID:-}" ] \
+     || [ -n "${ITERM_PROFILE:-}" ]; then
+  WIN_APP="iTerm"
+  # 방법0: 세션 종료 시 자동 닫기 설정
+  osascript -e '
     tell application "iTerm"
       tell current session of current window
         set close session on end to true
       end tell
-      return "ok"
     end tell
-  ' 2>&1) || cse_result="error"
-  echo "close session on end: $cse_result" >> "$DEBUGLOG"
-
-  # ── 방법1: TTY로 창 ID 찾기 (세션 활성 상태에서 가장 정확) ──
+  ' 2>/dev/null || true
+  # 방법1: TTY로 창 찾기
   if [ -n "$MY_TTY" ]; then
-    ITERM_WIN_ID=$(osascript -e "
+    WIN_ID=$(osascript -e "
       tell application \"iTerm\"
         repeat with w in windows
           repeat with t in tabs of w
@@ -59,15 +53,15 @@ if [ "$IN_ITERM" = "true" ]; then
           end repeat
         end repeat
       end tell
-    " 2>/dev/null) || ITERM_WIN_ID=""
+    " 2>/dev/null) || WIN_ID=""
   fi
-
-  # ── 방법2: TTY 방식 실패 시 frontmost 창 ID ──
-  if [ -z "$ITERM_WIN_ID" ]; then
-    ITERM_WIN_ID=$(osascript -e 'tell application "iTerm" to return id of first window' 2>/dev/null) || ITERM_WIN_ID=""
+  # 방법2: 방법1 실패 시 첫 번째 창
+  if [ -z "$WIN_ID" ]; then
+    WIN_ID=$(osascript -e 'tell application "iTerm" to return id of first window' 2>/dev/null) || WIN_ID=""
   fi
 fi
-echo "ITERM_WIN_ID='$ITERM_WIN_ID'" >> "$DEBUGLOG"
+
+echo "WIN_APP='$WIN_APP', WIN_ID='$WIN_ID'" >> "$DEBUGLOG"
 
 # ── 기존 프로세스 정리 ──
 EXISTING=$(lsof -ti TCP:8000 2>/dev/null || true)
@@ -134,59 +128,56 @@ echo "서버를 종료합니다..."
 
 kill $BACKEND_PID 2>/dev/null || true
 kill $FRONTEND_PID 2>/dev/null || true
-# Chrome 관련 잔여 프로세스(Helper 등) 정리
 pkill -f "ytdl-chrome" 2>/dev/null || true
-# 모든 프로세스가 완전히 종료될 때까지 대기
 sleep 1
 
 # ── 터미널 창 닫기 ──
-# Terminal.app: exit 0 → shellExitAction=2 → 자동 닫힘 (AppleScript 불필요)
-# iTerm2: ① close session on end (설정됨, exit 0으로 자동 닫힘)
-#         ② nohup 백업 (창 ID로 강제 닫기)
+# Terminal.app / iTerm2 모두 동일 로직:
+#   nohup으로 osascript를 detach → exit 0 이후에도 생존 → 창 ID로 닫기
 echo "=== close $(date) ===" >> "$DEBUGLOG"
-echo "IN_ITERM=$IN_ITERM, ITERM_WIN_ID='$ITERM_WIN_ID'" >> "$DEBUGLOG"
+echo "WIN_APP='$WIN_APP', WIN_ID='$WIN_ID'" >> "$DEBUGLOG"
 
-if [ "$IN_ITERM" = "true" ] && [ -n "$ITERM_WIN_ID" ]; then
-  # 창 ID를 파일로 전달 (quoting 문제 완전 회피)
-  echo "$ITERM_WIN_ID" > /tmp/ytdl_winid.txt
+if [ -n "$WIN_APP" ] && [ -n "$WIN_ID" ]; then
+  # 창 정보를 파일로 전달 (quoting 문제 완전 회피)
+  echo "$WIN_ID"  > /tmp/ytdl_winid.txt
+  echo "$WIN_APP" > /tmp/ytdl_winapp.txt
 
-  # close script를 파일로 생성 (single-quoted heredoc = 내부 변수 미치환)
-  # 내부의 $WIN_ID는 close script 실행 시 치환됨
+  # close script 생성 (single-quoted heredoc → 내부 변수 미치환)
+  # 내부 $WIN_ID, $WIN_APP 는 close script 실행 시점에 치환됨
   cat > /tmp/ytdl_close.sh << 'CLOSESCRIPT'
 #!/bin/bash
 sleep 0.8
 WIN_ID=$(cat /tmp/ytdl_winid.txt 2>/dev/null)
+WIN_APP=$(cat /tmp/ytdl_winapp.txt 2>/dev/null)
 LOGFILE=/tmp/ytdl_debug.log
-echo "=== ytdl_close $(date) WIN_ID='$WIN_ID' ===" >> "$LOGFILE"
-if [ -n "$WIN_ID" ]; then
+echo "=== ytdl_close $(date) APP='$WIN_APP' ID='$WIN_ID' ===" >> "$LOGFILE"
+if [ -n "$WIN_ID" ] && [ -n "$WIN_APP" ]; then
   result=$(osascript 2>&1 << OSASCRIPT
-tell application "iTerm"
-  set winCount to count of windows
+tell application "$WIN_APP"
   repeat with w in windows
-    if (id of w) = $WIN_ID then
+    if id of w = $WIN_ID then
       close w
       return "closed"
     end if
   end repeat
-  return "not found (total windows: " & (winCount as string) & ")"
+  return "not found"
 end tell
 OSASCRIPT
 )
   echo "osascript: $result" >> "$LOGFILE"
 else
-  echo "WIN_ID empty!" >> "$LOGFILE"
+  echo "params empty" >> "$LOGFILE"
 fi
-rm -f /tmp/ytdl_winid.txt /tmp/ytdl_close.sh
+rm -f /tmp/ytdl_winid.txt /tmp/ytdl_winapp.txt /tmp/ytdl_close.sh
 CLOSESCRIPT
 
   chmod +x /tmp/ytdl_close.sh
-  echo "Launching nohup /tmp/ytdl_close.sh" >> "$DEBUGLOG"
+  echo "Launching nohup close (APP=$WIN_APP, ID=$WIN_ID)" >> "$DEBUGLOG"
   nohup bash /tmp/ytdl_close.sh >> "$DEBUGLOG" 2>&1 &
   disown
-  echo "nohup launched (pid=$!)" >> "$DEBUGLOG"
-
-elif [ "$IN_ITERM" = "true" ]; then
-  echo "IN_ITERM=true but ITERM_WIN_ID empty → relying on 'close session on end'" >> "$DEBUGLOG"
+  echo "nohup pid=$!" >> "$DEBUGLOG"
+else
+  echo "WIN_APP or WIN_ID empty → skip" >> "$DEBUGLOG"
 fi
 
 exit 0
