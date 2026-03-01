@@ -20,8 +20,8 @@ echo "==============================="
 
 # ── 시작 시: 터미널 종류 감지 & 창 ID 캡처 ──
 MY_TTY=$(tty 2>/dev/null) || MY_TTY=""
-WIN_APP=""   # "Terminal" 또는 "iTerm"
-WIN_ID=""    # 창 ID
+WIN_APP=""
+WIN_ID=""
 
 if [ "${TERM_PROGRAM:-}" = "Apple_Terminal" ]; then
   WIN_APP="Terminal"
@@ -31,7 +31,6 @@ elif [ "${TERM_PROGRAM:-}" = "iTerm.app" ] \
      || [ -n "${ITERM_SESSION_ID:-}" ] \
      || [ -n "${ITERM_PROFILE:-}" ]; then
   WIN_APP="iTerm"
-  # 방법0: 세션 종료 시 자동 닫기 설정
   osascript -e '
     tell application "iTerm"
       tell current session of current window
@@ -39,7 +38,6 @@ elif [ "${TERM_PROGRAM:-}" = "iTerm.app" ] \
       end tell
     end tell
   ' 2>/dev/null || true
-  # 방법1: TTY로 창 찾기
   if [ -n "$MY_TTY" ]; then
     WIN_ID=$(osascript -e "
       tell application \"iTerm\"
@@ -55,7 +53,6 @@ elif [ "${TERM_PROGRAM:-}" = "iTerm.app" ] \
       end tell
     " 2>/dev/null) || WIN_ID=""
   fi
-  # 방법2: 방법1 실패 시 첫 번째 창
   if [ -z "$WIN_ID" ]; then
     WIN_ID=$(osascript -e 'tell application "iTerm" to return id of first window' 2>/dev/null) || WIN_ID=""
   fi
@@ -121,29 +118,33 @@ else
   wait
 fi
 
-# ── Chrome 종료됨 → 모든 프로세스 종료 ──
-trap - EXIT SIGINT SIGTERM  # 재진입 방지
+# ── Chrome 종료됨 → 정리 시작 ──
+# set +e: 이 아래부터는 어떤 명령이 실패해도 스크립트가 중단되지 않음
+# (set -e + EXIT trap 조합으로 인한 조기 종료 완전 방지)
+set +e
+echo "=== [1] Chrome 종료 $(date) ===" >> "$DEBUGLOG"
+
+trap - EXIT SIGINT SIGTERM
+echo "=== [2] trap 해제 ===" >> "$DEBUGLOG"
+
 echo ""
 echo "서버를 종료합니다..."
-
-kill $BACKEND_PID 2>/dev/null || true
-kill $FRONTEND_PID 2>/dev/null || true
-pkill -f "ytdl-chrome" 2>/dev/null || true
+kill $BACKEND_PID 2>/dev/null
+echo "=== [3] backend kill ===" >> "$DEBUGLOG"
+kill $FRONTEND_PID 2>/dev/null
+echo "=== [4] frontend kill ===" >> "$DEBUGLOG"
+pkill -f "ytdl-chrome" 2>/dev/null
+echo "=== [5] pkill done ===" >> "$DEBUGLOG"
 sleep 1
+echo "=== [6] sleep done ===" >> "$DEBUGLOG"
 
 # ── 터미널 창 닫기 ──
-# Terminal.app / iTerm2 모두 동일 로직:
-#   nohup으로 osascript를 detach → exit 0 이후에도 생존 → 창 ID로 닫기
-echo "=== close $(date) ===" >> "$DEBUGLOG"
-echo "WIN_APP='$WIN_APP', WIN_ID='$WIN_ID'" >> "$DEBUGLOG"
+echo "=== [7] close section WIN_APP='$WIN_APP', WIN_ID='$WIN_ID' ===" >> "$DEBUGLOG"
 
 if [ -n "$WIN_APP" ] && [ -n "$WIN_ID" ]; then
-  # 창 정보를 파일로 전달 (quoting 문제 완전 회피)
   echo "$WIN_ID"  > /tmp/ytdl_winid.txt
   echo "$WIN_APP" > /tmp/ytdl_winapp.txt
 
-  # close script 생성 (single-quoted heredoc → 내부 변수 미치환)
-  # 내부 $WIN_ID, $WIN_APP 는 close script 실행 시점에 치환됨
   cat > /tmp/ytdl_close.sh << 'CLOSESCRIPT'
 #!/bin/bash
 sleep 0.8
@@ -172,12 +173,13 @@ rm -f /tmp/ytdl_winid.txt /tmp/ytdl_winapp.txt /tmp/ytdl_close.sh
 CLOSESCRIPT
 
   chmod +x /tmp/ytdl_close.sh
-  echo "Launching nohup close (APP=$WIN_APP, ID=$WIN_ID)" >> "$DEBUGLOG"
+  echo "=== [8] launching nohup ===" >> "$DEBUGLOG"
   nohup bash /tmp/ytdl_close.sh >> "$DEBUGLOG" 2>&1 &
   disown
-  echo "nohup pid=$!" >> "$DEBUGLOG"
+  echo "=== [9] nohup pid=$! ===" >> "$DEBUGLOG"
 else
-  echo "WIN_APP or WIN_ID empty → skip" >> "$DEBUGLOG"
+  echo "=== [7b] WIN_APP or WIN_ID empty, skip ===" >> "$DEBUGLOG"
 fi
 
+echo "=== [10] exit 0 ===" >> "$DEBUGLOG"
 exit 0
